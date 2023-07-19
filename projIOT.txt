@@ -1,0 +1,107 @@
+projetoIOT.py
+--------------------
+
+import network
+import time
+import utime
+from machine import Pin
+from umqtt.simple import MQTTClient
+
+sensor = machine.ADC(28)
+led = Pin("LED", Pin.OUT)
+readDelay = 0.5
+
+# Replace with your MQTT broker details
+MQTT_SERVER = "192.168.1.220"
+MQTT_PORT = 1883
+MQTT_USER = "rafael"
+MQTT_PASSWORD = "rafael"
+
+# Read network profiles from wifi.dat file
+def read_network_profiles():
+    profiles = {}
+    with open("wifi.dat", "r") as f:
+        for line in f:
+            ssid, password = line.strip().split(";")
+            profiles[ssid] = password
+    return profiles
+
+# Connect to Wi-Fi
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+
+network_profiles = read_network_profiles()
+
+connected = False
+for ssid, password in network_profiles.items():
+    wlan.connect(ssid, password)
+    print(wlan)
+    for _ in range(10):
+        if wlan.isconnected():
+            connected = True
+            break
+        time.sleep(1)
+    if connected:
+        break
+
+if not connected:
+    print("Failed to connect to Wi-Fi")
+
+# Define MQTT client instance
+client = MQTTClient("client_id", MQTT_SERVER, MQTT_PORT, MQTT_USER, MQTT_PASSWORD)
+client.connect()
+
+
+led_state = True  # Variable to track the state of the LED
+
+# Subscription callback function
+def sub_cb(topic, msg):
+    message = msg.decode("utf-8")
+    print("Received message: {}".format(message))
+
+    global led_state
+    if message == "start":
+        led.on()
+        led_state = False  # Turn on the LED
+        print("LED turned on!")
+    elif message == "stop":
+        led_state = True  # Turn off the LED
+        print("LED turned off!")
+
+# Subscribe to topic
+subscribe_topic = "control_topic"
+client.set_callback(sub_cb)
+client.subscribe(subscribe_topic)
+
+while True:
+    try:
+        min_adc_value = 0  # Minimum value of your sensor's ADC
+        max_adc_value = 65535  # Maximum value of your sensor's ADC
+        
+        humidity_percentage = (max_adc_value - sensor.read_u16()) * 100 / (max_adc_value - min_adc_value)
+        print("Humidity: {:.2f}%".format(humidity_percentage))
+
+        topic = "sensor_data"
+
+        # If the value of humidity_percentage is less than 60%, the plant needs water
+        if humidity_percentage < 60:
+            print("I need water!")
+            utime.sleep(readDelay)
+            message = "{:.2f}".format(humidity_percentage)
+            client.publish(topic, message)
+            if led_state:
+                led.on()  # Turn on the LED
+        else:
+            print("I'm good for now!")
+            utime.sleep(readDelay)
+            message = "{:.2f}%".format(humidity_percentage)
+            client.publish(topic, message)
+            if led_state:
+                led.off()  # Turn off the LED
+
+        client.check_msg()  # Check for incoming MQTT messages
+
+    except OSError as e:
+        print("Failed to read sensor data:", str(e))
+
+    time.sleep(2)  # Wait for 2 seconds before the next measurement
